@@ -29,6 +29,83 @@ wine_ratings2 %>%
   geom_jitter(alpha=0.3, size=1.5)
 
 
+# How many reviews by region are there in Arg?
+wine_ratings2 %>% 
+  filter(country=="Argentina") %>%
+  group_by(region_1) %>%
+  summarise(n = n()) %>%
+  arrange(desc(n))
+# How many reviews by varietal are there in Arg?
+wine_ratings2 %>% 
+  filter(country=="Argentina") %>%
+  group_by(variety) %>%
+  summarise(n = n()) %>%
+  arrange(desc(n))
+# Top 10 varietales represent 87% of total reviews
+
+# Selecting Arg wines of top 10 varietales
+wine_arg <- wine_ratings2 %>%
+              filter(country=="Argentina", 
+                     variety %in% c("Malbec","Cabernet Sauvignon","Chardonnay",
+                                    "Torrontés","Red Blend","Merlot","Bonarda",
+                                    "Sauvignon Blanc","Syrah","Pinot Noir"))
+
+# New feature: kind of wine c("Red","White")
+wine_arg <- wine_arg %>%
+              mutate(kind = case_when(variety %in% c("Chardonnay","Torrontés","auvignon Blanc") ~ "White",
+                                      TRUE ~ "Red"))
+
+wine_arg %>% 
+  group_by(kind) %>%
+  summarise(n = n()) %>%
+  arrange(desc(n))
+# 83.18% Red wine
+
+wine_arg %>%
+    ggplot(aes(x=kind, y=price)) + geom_boxplot()
+
+wine_arg %>%
+  ggplot(aes(x=kind, y=points)) + geom_boxplot()
+
+wine_arg %>% 
+  group_by(kind) %>%
+  summarise(median_point = median(points),
+            median_price = median(price, rm.na=T))
+
+
+wine_arg %>%
+  ggplot(aes(x=price, y=points, color=as.factor(kind))) +
+  geom_point(alpha=0.2, size=2) +
+  stat_smooth(method = 'lm', formula = y ~ log(x))
+
+
+# Creating high vs low feature according to points = log(price) function
+# Different classification for Red and White wines
+red <- wine_arg %>%
+        filter(kind == "Red")
+red_class <- lm(points ~ log(price), data = red)
+
+white <- wine_arg %>%
+        filter(kind == "White")
+white_class <- lm(points ~ log(price), data = white)
+
+red$estimated_point <- predict(red_class, red)
+white$estimated_point <- predict(white_class, white)
+
+# Rejoining and class above or below expected
+rm(wine_arg)
+wine_arg <- rbind(red,white)
+
+wine_arg <- wine_arg %>%
+              mutate(expected_class = case_when(points >= estimated_point ~ "Above Expected",
+                                                points < estimated_point ~ "Below Expected",
+                                                TRUE ~ "No Price"))
+
+wine_arg %>%
+  ggplot(aes(x=price, y=points, color=as.factor(expected_class))) +
+  geom_point(alpha=0.2, size=2)
+
+
 
 ##########################
 # Text mining on reviews
@@ -39,14 +116,14 @@ library(ggrepel)
 
 
 # Keeping only wines from Argentina, below 88 points and above
-wines_low <- wine_ratings %>% 
-  filter(country == "Argentina", points < 88) %>% 
+wines_low <- wine_arg %>% 
+  filter(expected_class == "Below Expected") %>% 
   select(description) %>%
   VectorSource() %>%
   VCorpus(readerControl = list(language="english"))
 
-wines_high <- wine_ratings %>% 
-  filter(country == "Argentina", points >= 88) %>% 
+wines_high <- wine_arg %>% 
+  filter(expected_class == "Above Expected") %>% 
   select(description) %>%
   VectorSource() %>%
   VCorpus(readerControl = list(language="english"))
@@ -125,3 +202,70 @@ wordcloud(nps_word_freqs_high$word, nps_word_freqs_high$freq,
           max.words = 100,
           colors = dark2)
 
+
+
+##########################
+# Topic Modeling
+library(topicmodels)
+library(broom)
+
+
+# Searching for 7 topics
+lda <- LDA(dtm_high, k=3, control = list(seed = 31416))
+term <- terms(lda, 10) #first 10 terms of every topic
+term #checking
+
+lda_low <- LDA(dtm_low, k=3, control = list(seed = 31416))
+term_low <- terms(lda_low, 10) #first 10 terms of every topic
+term_low #checking
+
+topic_doc <- tidy(lda, matrix="beta")
+
+
+################################
+# Correlated words graph
+library(tidyverse)
+library(tidytext)
+library(widyr)
+library(igraph)
+library(ggraph)
+library(extrafont)
+
+# Unnesting words from wine description
+wine_words <- wine_arg %>%
+  unnest_tokens(word, description) %>% 
+  anti_join(stop_words, by = "word")
+
+# Keeping top 40 words
+top_wine_words <- wine_words %>%
+  count(word, sort = TRUE) %>%
+  head(40)
+
+# Correlation matrix pairwise
+wine_words_correlation <- wine_words %>%
+  filter(word %in% top_wine_words$word) %>% 
+  pairwise_cor(word, points, sort = TRUE)
+
+
+# Plotting
+set.seed(13)
+#font_import()
+#loadfonts(quiet = T)
+
+wine_words_correlation %>%
+  filter(correlation > 0.80) %>% 
+  graph_from_data_frame() %>% 
+  ggraph(layout = "fr") + 
+  geom_edge_link(aes(edge_alpha = correlation), show.legend = FALSE) +
+  geom_node_point(color = "#C3272B", size = 3) +
+  geom_node_text(aes(label = name), repel = TRUE, color="darkgreen", size=4) +
+  labs(title = "Co-occuring Words in Argentine Wines' Descriptions",
+       subtitle = "among the 40 most common words\n",
+       caption = "\nSource: Kaggle.com
+       Visualization @gonzalofichero") +
+  set_graph_style(family = "Century Schoolbook") +
+  theme_void()+ 
+  theme(text = element_text(family = "Century Schoolbook"),
+        plot.title = element_text(hjust = 0.5),
+        plot.subtitle = element_text(hjust = 0.5),
+        plot.margin = margin(0.25, 0.25, 0.25, 0.25, "in")) 
