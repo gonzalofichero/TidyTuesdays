@@ -5,7 +5,6 @@ library(stringr)
 
 
 # Loading Data
-#Sys.setenv(http_proxy="http://proxy.ar.bsch:8080/")
 wine_ratings <- readr::read_csv("winemag-data-130k-v2.csv")
 wine_ratings2 <- readr::read_csv("winemag-data_first150k.csv")
 
